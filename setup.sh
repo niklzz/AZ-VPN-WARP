@@ -152,6 +152,14 @@ echo 'put there whatever needs a foreign IP'
 until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
 	read -rp $'Route the \001\e[1;32m\002AntiZapret list\e[0m\002 through Cloudflare WARP? [y/n]: ' -e -i y WARP_LIST_ENABLE
 done
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	echo
+	echo 'Preferred Cloudflare edge nodes as IATA codes, comma-separated, best first (empty = any)'
+	echo 'Which node serves an anycast address is up to the network, so the one you want may well'
+	echo 'be unreachable. Run /root/antizapret/warp.sh after the install to see what this server'
+	echo 'actually reaches and pick from the list'
+	read -rp 'Nodes: ' -e -i HEL WARP_NODE
+fi
 echo
 echo "Personal access token for the private fork https://github.com/$V2_REPO"
 echo 'Leave empty if the repository is public. Input is hidden'
@@ -537,6 +545,7 @@ OPENVPN_DCO=$OPENVPN_DCO
 UPLINK_ENABLE=y
 UPLINK_INTERFACE=$UPLINK_INTERFACE
 WARP_LIST_ENABLE=$WARP_LIST_ENABLE
+WARP_NODE=$WARP_NODE
 VPN_WARP=$VPN_WARP
 GITHUB_TOKEN=$GITHUB_TOKEN
 ANTIZAPRET_DNS=$ANTIZAPRET_DNS
@@ -604,6 +613,35 @@ rm -rf /tmp/antizapret
 
 # В настройках лежит токен GitHub, поэтому закрываем файл от всех кроме root
 chmod 600 /root/antizapret/setup
+
+# Скачиваем warpscout - им warp.sh выбирает узел Cloudflare для WARP-ветки.
+# Готовый статический бинарник ~4 МБ, root ему не нужен, память сам держит в 32 МiB -
+# Docker ради одного вызова в сутки был бы несоразмерен. Хеши прибиты: файл исполняемый
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	WARPSCOUT_VERSION=0.14.0
+	case "$(uname -m)" in
+		x86_64)  WARPSCOUT_ARCH=amd64; WARPSCOUT_SHA256=5092c65ade7cc6f35a9845cd8600b46420a5b867c2afa31592d4447687a0fee8 ;;
+		aarch64) WARPSCOUT_ARCH=arm64; WARPSCOUT_SHA256=b890fae2a21bbb74e72255bc05c53e4bbfe38d1b8fdd0af78d9a82d470c4292e ;;
+		*)       WARPSCOUT_ARCH='' ;;
+	esac
+
+	if [[ -n "$WARPSCOUT_ARCH" ]]; then
+		rm -rf /tmp/warpscout
+		mkdir -p /tmp/warpscout
+		WARPSCOUT_FILE="warpscout_${WARPSCOUT_VERSION}_linux_${WARPSCOUT_ARCH}.tar.gz"
+		if curl -fsSL --connect-timeout 30 -o "/tmp/warpscout/$WARPSCOUT_FILE" \
+				"https://github.com/vernette/warpscout/releases/download/v$WARPSCOUT_VERSION/$WARPSCOUT_FILE" \
+			&& echo "$WARPSCOUT_SHA256  /tmp/warpscout/$WARPSCOUT_FILE" | sha256sum -c - \
+			&& tar -xzf "/tmp/warpscout/$WARPSCOUT_FILE" -C /tmp/warpscout; then
+			install -m 755 /tmp/warpscout/warpscout /root/antizapret/warpscout
+		else
+			echo 'Warning! Failed to download warpscout, node selection will be unavailable'
+		fi
+		rm -rf /tmp/warpscout
+	else
+		echo "Warning! No warpscout build for $(uname -m), node selection will be unavailable"
+	fi
+fi
 
 # Готовим профиль аплинка до зарубежного сервера
 # DNS вырезаем, иначе awg-quick перепишет /etc/resolv.conf самого сервера
@@ -753,4 +791,8 @@ fi
 # Перезагружаем
 echo
 echo -e '\e[1;32mAntiZapret VPN + full VPN installed successfully!\e[0m'
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	echo 'Run /root/antizapret/warp.sh to see which Cloudflare nodes this server actually reaches'
+	echo 'and pick from them - the node you asked for may be unreachable from this network'
+fi
 reboot
