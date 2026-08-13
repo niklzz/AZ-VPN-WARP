@@ -37,7 +37,9 @@ if [[ -z "$1" || "$1" == 'ip' || "$1" == 'ips' || "$1" == 'noclear' || "$1" == '
 
 	# Обрабатываем конфигурационные файлы
 	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d' config/*exclude-ips.txt | sort -u > temp/exclude-ips.txt
-	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d' download/*ips.txt config/*include-ips.txt | sort -u > temp/include-ips.txt
+	# uplink-ips идут сюда же: клиент должен маршрутизировать их в туннель, иначе до сервера
+	# они не доедут. Куда их вести дальше, решает отдельный ipset ниже
+	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d' download/*ips.txt config/*include-ips.txt config/*uplink-ips.txt | sort -u > temp/include-ips.txt
 
 	# Убираем IPv4-адреса из исключений
 	comm -13 temp/exclude-ips.txt temp/include-ips.txt > temp/route-ips.txt
@@ -50,13 +52,31 @@ if [[ -z "$1" || "$1" == 'ip' || "$1" == 'ips' || "$1" == 'noclear' || "$1" == '
 
 	# Обновляем ipset v2-route
 	# По нему up.sh метит трафик к IP-адресам из списков АнтиЗапрета, у которых нет домена
-	# (диапазоны Cloudflare, Telegram и т.п.), чтобы он ушел в аплинк, а не к российскому провайдеру
+	# (диапазоны Cloudflare, Telegram и т.п.), чтобы он ушел в WARP, а не к российскому провайдеру
 	{
 		echo 'create v2-route hash:net -exist'
 		echo 'flush v2-route'
 		while read -r cidr; do
 			echo "add v2-route $cidr -exist"
 		done < result/route-ips.txt
+	} | ipset restore
+
+	# Обрабатываем список сетей для зарубежного аплинка - то же, что uplink-hosts.txt,
+	# только для адресов без домена. Имеет приоритет над v2-route: адрес, попавший в оба,
+	# уходит за границу
+	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d' config/*uplink-ips.txt | sort -u \
+	| awk -F'[/.]' 'NF==5 && $1>=0 && $1<=255 && $2>=0 && $2<=255 && $3>=0 && $3<=255 && $4>=0 && $4<=255 && $5>=1 && $5<=32 {print}' > result/uplink-ips.txt
+
+	# Выводим результат
+	echo "$(wc -l < result/uplink-ips.txt) - uplink-ips.txt"
+
+	# Обновляем ipset v2-uplink
+	{
+		echo 'create v2-uplink hash:net -exist'
+		echo 'flush v2-uplink'
+		while read -r cidr; do
+			echo "add v2-uplink $cidr -exist"
+		done < result/uplink-ips.txt
 	} | ipset restore
 
 	# Обрабатываем список запрещенных сетей для форвардинга

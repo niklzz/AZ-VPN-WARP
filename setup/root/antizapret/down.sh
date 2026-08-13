@@ -110,9 +110,13 @@ iptables -w -D INPUT -i $DEFAULT_INTERFACE -m set --match-set antizapret-deny sr
 # Routing marks
 iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j MARK --set-mark 0x13337
 iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j MARK --set-mark 0x13335
-# ipset метится в WARP или в аплинк в зависимости от WARP_LIST_ENABLE - снимаем оба варианта
-iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13335
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-uplink dst -j MARK --set-mark 0x13337
+# ipset метится в WARP или в аплинк в зависимости от WARP_LIST_ENABLE - снимаем оба варианта.
+# Третья строка - правило прошлых версий, без исключения по v2-uplink: при обновлении оно иначе
+# осталось бы висеть в цепочке навсегда, ведь его точной пары в down.sh уже нет
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -m set ! --match-set v2-uplink dst -j MARK --set-mark 0x13335
 iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13337
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13335
 # Clamp TCP MSS
 iptables -w -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 iptables -w -t mangle -D OUTPUT ! -o lo -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu

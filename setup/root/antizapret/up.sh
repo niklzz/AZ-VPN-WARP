@@ -287,17 +287,31 @@ iptables -w -I INPUT 2 -i $DEFAULT_INTERFACE -m set --match-set antizapret-deny 
 		done < result/route-ips.txt
 	fi
 } | ipset restore
+# Сети из config/uplink-ips.txt - то же, что uplink-hosts.txt, только для адресов без домена.
+# Создаём всегда: на пустой ipset правило ниже сошлётся штатно, а на отсутствующий - упадёт
+{
+	echo 'create v2-uplink hash:net -exist'
+	echo 'flush v2-uplink'
+	if [[ -f result/uplink-ips.txt ]]; then
+		while read -r cidr; do
+			echo "add v2-uplink $cidr"
+		done < result/uplink-ips.txt
+	fi
+} | ipset restore
 # Routing marks
 # Метка ставится в mangle PREROUTING (приоритет -150), то есть до nat (-100), поэтому здесь
 # назначение - ещё fake IP, причём у всех пакетов соединения, а не только у первого.
 # Дальше метка выбирает таблицу маршрутизации: 13337 - аплинк, 13335 - WARP, без метки - байпас.
 # $FAKE_IP - пул ручного списка uplink-hosts.txt, $WARP_FAKE_IP - пул списка АнтиЗапрета
 iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j MARK --set-mark 0x13337
+iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-uplink dst -j MARK --set-mark 0x13337
 if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	# Список АнтиЗапрета целиком уходит в WARP - и домены через свой пул fake IP,
-	# и голые IP из ipset (диапазоны Cloudflare, Telegram, у которых домена нет)
+	# и голые IP из ipset (диапазоны Cloudflare, Telegram, у которых домена нет).
+	# MARK не прерывает обход цепочки, поэтому приоритет аплинка держится явным исключением:
+	# без него правило ниже просто перезаписало бы метку, поставленную для v2-uplink
 	iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j MARK --set-mark 0x13335
-	iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13335
+	iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -m set ! --match-set v2-uplink dst -j MARK --set-mark 0x13335
 else
 	# WARP выключен - везти некому, список едет через аплинк, как раньше
 	iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13337

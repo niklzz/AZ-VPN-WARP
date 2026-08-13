@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | путь | что попадает | пул fake IP | метка | таблица | выход |
 |---|---|---|---|---|---|
 | байпас | всё, что не в списках | — | — | main | провайдер клиента (в туннель не входит) |
-| заграница | `config/uplink-hosts.txt` (ручной, **приоритет**) | `FAKE_IP` = 198.18/15 | `0x13337` | 13337 | аплинк `az` (AmneziaWG) |
+| заграница | `config/uplink-hosts.txt` + `config/uplink-ips.txt` (ручные, **приоритет**) | `FAKE_IP` = 198.18/15 | `0x13337` | 13337 | аплинк `az` (AmneziaWG) |
 | WARP | список АнтиЗапрета (реестр РКН) | `WARP_FAKE_IP` = 10.30/15 | `0x13335` | 13335 | `warp-antizapret`, российский адрес Cloudflare |
 
 **Список АнтиЗапрета идёт через WARP, а не за границу.** Обфусцированный туннель прячет его от DPI,
@@ -23,6 +23,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 домен, попавший в оба списка, уходит за границу; обеспечивается порядком политик в `kresd.conf`
 (`uplink.rpz` добавляется раньше `proxy.rpz`). Голые IP из ipset `v2-route` (Cloudflare, Telegram —
 у них нет домена) метятся в WARP вместе со всем списком.
+
+**Адреса и подсети в аплинк — `config/uplink-ips.txt`** (ipset `v2-uplink`), это IP-аналог
+`uplink-hosts.txt`. Приоритет здесь держится **не порядком правил, а явным исключением**:
+`MARK` не прерывает обход цепочки, поэтому правило для `v2-route` несёт
+`-m set ! --match-set v2-uplink dst` — иначе оно просто перезаписало бы метку, поставленную выше.
+Адреса отсюда попадают и в `result/route-ips.txt`, то есть в маршруты клиента: без этого
+трафик до них не дошёл бы до сервера вовсе. Применяется через `parse.sh ip` + `systemctl restart antizapret`
+(один `parse.sh` обновит только ipset, а правила ставит `up.sh`).
 
 Зарубежный сервер — **тупая выходная нода**: любой WG/AWG-сервер, от него нужен только клиентский
 профиль и NAT своих пиров в интернет. Вся логика (kresd, `proxy.py`, fake-IP, DNAT, списки) — на RU-сервере.
@@ -183,9 +191,10 @@ Cloudflare молча отбрасывает как невалидные, а DPI
     плюс готовые файлы маршрутов для TP-Link / Keenetic / MikroTik. В маршруты клиента идут **оба**
     fake-диапазона — иначе WARP-ветка до сервера не доедет.
   - `deny.rpz` / `deny2.rpz` — блокировка рекламы для AntiZapret и полного VPN раздельно.
-  - ipset'ы `antizapret-drop`, `antizapret-deny`, `antizapret-forward`, `antizapret-allow`, `v2-route` —
-    заливаются через `ipset restore`. `v2-route` = `result/route-ips.txt`, по нему `up.sh` метит трафик
-    к IP-адресам АнтиЗапрета без домена (диапазоны Cloudflare, Telegram) в аплинк.
+  - ipset'ы `antizapret-drop`, `antizapret-deny`, `antizapret-forward`, `antizapret-allow`, `v2-route`,
+    `v2-uplink` — заливаются через `ipset restore`. `v2-route` = `result/route-ips.txt`, по нему `up.sh`
+    метит в WARP трафик к IP-адресам АнтиЗапрета без домена (диапазоны Cloudflare, Telegram);
+    `v2-uplink` = `config/uplink-ips.txt` — то же для зарубежного аплинка, и он важнее `v2-route`.
   - RPZ-файлы обновляются только при реальном изменении (diff), затем `cache.clear()` через `socat` в control-сокет kresd.
 - **`config/` vs `download/`**: `config/` — пользовательское (переживает переустановку), `download/` — скачанное,
   в репе лежат курируемые автором списки, которые как раз оттуда и скачиваются.
