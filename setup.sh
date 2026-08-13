@@ -146,7 +146,8 @@ until [[ "$OPENVPN_DCO" =~ (y|n) ]]; do
 done
 echo
 echo 'The AntiZapret list goes out through Cloudflare WARP: the obfuscated tunnel hides it from DPI'
-echo 'while the exit address stays Russian. Requires an obfuscated profile at /root/v2-warp.conf'
+echo 'while the exit address stays Russian. The profile is generated on first start - drop your own'
+echo 'at /root/v2-warp.conf only if you have one, it will be used as is and never overwritten'
 echo 'Domains from config/uplink-hosts.txt keep going through the uplink and take priority -'
 echo 'put there whatever needs a foreign IP'
 until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
