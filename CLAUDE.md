@@ -268,3 +268,8 @@ iptables -t nat -S V2-WARP-MAPPING | head     # мапинги fake->real WARP-�
 
 **Правки надо пушить в форк, чтобы их увидел сервер:** `setup.sh` клонирует `niklzz/az-vpn`, а `update.sh`
 каждую ночь перетягивает оттуда себя, `parse.sh` и `doall.sh`. Локальный чекаут установщику не виден.
+
+
+для мониторинга трафикаф
+watch -n1 -d awg show warp-antizapret
+watch -n1 -d awg show az
