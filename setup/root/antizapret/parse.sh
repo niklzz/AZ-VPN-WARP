@@ -48,6 +48,17 @@ if [[ -z "$1" || "$1" == 'ip' || "$1" == 'ips' || "$1" == 'noclear' || "$1" == '
 	# Выводим результат
 	echo "$(wc -l < result/route-ips.txt) - route-ips.txt"
 
+	# Обновляем ipset v2-route
+	# По нему up.sh метит трафик к IP-адресам из списков АнтиЗапрета, у которых нет домена
+	# (диапазоны Cloudflare, Telegram и т.п.), чтобы он ушел в аплинк, а не к российскому провайдеру
+	{
+		echo 'create v2-route hash:net -exist'
+		echo 'flush v2-route'
+		while read -r cidr; do
+			echo "add v2-route $cidr -exist"
+		done < result/route-ips.txt
+	} | ipset restore
+
 	# Обрабатываем список запрещенных сетей для форвардинга
 	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d' config/*drop-ips.txt | sort -u \
 	| awk -F'[/.]' 'NF==5 && $1>=0 && $1<=255 && $2>=0 && $2<=255 && $3>=0 && $3<=255 && $4>=0 && $4<=255 && $5>=1 && $5<=32 {print}' > result/drop-ips.txt
@@ -82,12 +93,17 @@ if [[ -z "$1" || "$1" == 'ip' || "$1" == 'ips' || "$1" == 'noclear' || "$1" == '
 
 	[[ "$ALTERNATIVE_CLIENT_IP" == 'y' ]] && IP="${CLIENT_IP:-172}" || IP=10
 	[[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && FAKE_IP="${FAKE_IP:-198.18}" || FAKE_IP="$IP.30"
+	# Диапазон fake IP для WARP-ветки - всегда противоположный основному, чтобы они не пересеклись
+	[[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && WARP_FAKE_IP="${WARP_FAKE_IP:-$IP.30}" || WARP_FAKE_IP="${WARP_FAKE_IP:-198.18}"
 
 	# Создаем файл для OpenVPN и файлы маршрутов для роутеров
+	# Клиент заворачивает в туннель оба fake-диапазона: заграничный и WARP
 	echo "push \"route $FAKE_IP.0.0 255.254.0.0\"" > result/DEFAULT
-	echo -e "route 0.0.0.0 128.0.0.0 net_gateway\nroute 128.0.0.0 128.0.0.0 net_gateway\nroute $IP.29.0.0 255.255.248.0\nroute $FAKE_IP.0.0 255.254.0.0" > result/tp-link-openvpn-routes.txt
-	echo -e "route ADD DNS_IP_1 MASK 255.255.255.255 $IP.29.8.1\nroute ADD DNS_IP_2 MASK 255.255.255.255 $IP.29.8.1\nroute ADD $FAKE_IP.0.0 MASK 255.254.0.0 $IP.29.8.1" > result/keenetic-wireguard-routes.txt
+	echo "push \"route $WARP_FAKE_IP.0.0 255.254.0.0\"" >> result/DEFAULT
+	echo -e "route 0.0.0.0 128.0.0.0 net_gateway\nroute 128.0.0.0 128.0.0.0 net_gateway\nroute $IP.29.0.0 255.255.248.0\nroute $FAKE_IP.0.0 255.254.0.0\nroute $WARP_FAKE_IP.0.0 255.254.0.0" > result/tp-link-openvpn-routes.txt
+	echo -e "route ADD DNS_IP_1 MASK 255.255.255.255 $IP.29.8.1\nroute ADD DNS_IP_2 MASK 255.255.255.255 $IP.29.8.1\nroute ADD $FAKE_IP.0.0 MASK 255.254.0.0 $IP.29.8.1\nroute ADD $WARP_FAKE_IP.0.0 MASK 255.254.0.0 $IP.29.8.1" > result/keenetic-wireguard-routes.txt
 	echo "/ip route add dst-address=$FAKE_IP.0.0/15 gateway=$IP.29.8.1 distance=1 comment=\"antizapret-wireguard\"" > result/mikrotik-wireguard-routes.txt
+	echo "/ip route add dst-address=$WARP_FAKE_IP.0.0/15 gateway=$IP.29.8.1 distance=1 comment=\"antizapret-wireguard\"" >> result/mikrotik-wireguard-routes.txt
 	while read -r cidr; do
 		NET="$(echo "$cidr" | awk -F '/' '{print $1}')"
 		MASK="$(sipcalc -- "$cidr" | awk '/Network mask/ {print $4; exit;}')"
@@ -104,7 +120,7 @@ if [[ -z "$1" || "$1" == 'ip' || "$1" == 'ips' || "$1" == 'noclear' || "$1" == '
 	fi
 
 	# Создаем файл ips для WireGuard/AmneziaWG
-	echo -n ", $FAKE_IP.0.0/15" > result/ips
+	echo -n ", $FAKE_IP.0.0/15, $WARP_FAKE_IP.0.0/15" > result/ips
 	awk '{printf ", %s", $0}' result/route-ips.txt >> result/ips
 
 	# Обновляем файл ips в WireGuard/AmneziaWG только если файл изменился
@@ -267,6 +283,23 @@ if [[ -z "$1" || "$1" == 'host' || "$1" == 'hosts' || "$1" == 'noclear' || "$1" 
 	if [[ -f result/proxy.rpz ]] && ! diff -q result/proxy.rpz /etc/knot-resolver/proxy.rpz; then
 		cp -f result/proxy.rpz /etc/knot-resolver/proxy.rpz.tmp
 		mv -f /etc/knot-resolver/proxy.rpz.tmp /etc/knot-resolver/proxy.rpz
+		sleep 5
+	fi
+
+	# Обрабатываем список доменов для маршрутизации через WARP
+	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d; s/[]_~:/?#\[@!$&'\''()*+,;=].*//; s/.*/\L&/' config/*warp-hosts.txt | sort -u > result/warp-hosts.txt
+
+	# Выводим результат
+	echo "$(wc -l < result/warp-hosts.txt) - warp-hosts.txt"
+
+	# Создаем файл warp.rpz для Knot Resolver
+	echo -e '$TTL 10800\n@ SOA . . (1 1 1 1 10800)' > result/warp.rpz
+	sed 's/$/ CNAME ./; p; s/^/*./' result/warp-hosts.txt >> result/warp.rpz
+
+	# Обновляем файл warp.rpz в Knot Resolver только если файл изменился
+	if [[ -f result/warp.rpz ]] && ! diff -q result/warp.rpz /etc/knot-resolver/warp.rpz; then
+		cp -f result/warp.rpz /etc/knot-resolver/warp.rpz.tmp
+		mv -f /etc/knot-resolver/warp.rpz.tmp /etc/knot-resolver/warp.rpz
 		sleep 5
 	fi
 

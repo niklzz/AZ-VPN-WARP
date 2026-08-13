@@ -37,17 +37,49 @@ fi
 
 [[ "$ALTERNATIVE_CLIENT_IP" == 'y' ]] && IP="${CLIENT_IP:-172}" || IP=10
 [[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && FAKE_IP="${FAKE_IP:-198.18}" || FAKE_IP="$IP.30"
+# Диапазон fake IP для WARP-ветки - всегда противоположный основному, чтобы они не пересеклись
+[[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && WARP_FAKE_IP="${WARP_FAKE_IP:-$IP.30}" || WARP_FAKE_IP="${WARP_FAKE_IP:-198.18}"
+
+# Аплинк до зарубежного сервера
+# Профиль готовит setup.sh: DNS вырезан, добавлены Table = 13337 и правило по метке
+UPLINK_INTERFACE="${UPLINK_INTERFACE:-az}"
+UPLINK_PATH="/etc/amnezia/amneziawg/$UPLINK_INTERFACE.conf"
+
+if [[ "$UPLINK_ENABLE" == 'y' && -f $UPLINK_PATH ]]; then
+	set +e
+	echo "Starting $UPLINK_INTERFACE..."
+	awg-quick up $UPLINK_INTERFACE 2>/dev/null
+
+	if [[ $? -eq 0 ]]; then
+		echo "Started $UPLINK_INTERFACE"
+		# Апстримы kresd@2 и fallback.lua живут за Cloudflare и из России недоступны,
+		# а по заблокированным доменам ещё и отвечают подменёнными записями - уводим их в аплинк.
+		# Маршруты привязаны к устройству и исчезают вместе с ним, зеркало в down.sh не нужно
+		for dns in 1.1.1.1 1.0.0.1 9.9.9.10 149.112.112.10 76.76.2.0 76.76.10.0 \
+				64.6.64.6 64.6.65.6 208.67.222.222 86.54.11.100; do
+			ip route replace "$dns" dev $UPLINK_INTERFACE
+		done
+	else
+		echo "Starting $UPLINK_INTERFACE failed! Blocked sites will not work"
+	fi
+	set -e
+fi
 
 # WARP AntiZapret
 WARP_ANTIZAPRET_INTERFACE=warp-antizapret
 WARP_ANTIZAPRET_PATH="/etc/wireguard/$WARP_ANTIZAPRET_INTERFACE.conf"
 
-if [[ "$ANTIZAPRET_WARP" == 'y' ]]; then
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	set +e
 	echo "Starting $WARP_ANTIZAPRET_INTERFACE..."
 	WARP_PRIVATE_KEY=$(wg genkey)
 	KEY=$(echo "$WARP_PRIVATE_KEY" | wg pubkey)
-	REG=$(curl -sSfL --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+	# api.cloudflareclient.com из России недоступен, а его имя может не резолвиться местным
+	# резолвером - соединение уводим в аплинк, а адрес берём через уже прибитый к нему 1.1.1.1
+	WARP_API_IP=$(kdig +short +time=3 +retry=1 @1.1.1.1 api.cloudflareclient.com | grep -m1 -E '^[0-9.]+$')
+	REG=$(curl -sSfL --connect-timeout 10 --interface $UPLINK_INTERFACE \
+		${WARP_API_IP:+--resolve api.cloudflareclient.com:443:$WARP_API_IP} \
+		-X POST "https://api.cloudflareclient.com/v0a2158/reg" \
 		-H 'Content-Type: application/json' \
 		-d "{\"key\": \"$KEY\"}")
 
@@ -60,12 +92,8 @@ PrivateKey = $WARP_PRIVATE_KEY
 Address = $WARP_ADDRESS/32
 MTU = 1420
 Table = 13335
-PostUp = ip rule add from $IP.29.0.0/16 to $IP.29.0.0/16 lookup main priority 5000 || true
-PostUp = ip rule add from $IP.29.0.0/16 to $FAKE_IP.0.0/15 lookup main priority 5000 || true
-PostUp = ip rule add from $IP.29.0.0/16 lookup 13335 priority 10000 || true
-PostDown = ip rule del from $IP.29.0.0/16 to $IP.29.0.0/16 priority 5000
-PostDown = ip rule del from $IP.29.0.0/16 to $FAKE_IP.0.0/15 priority 5000
-PostDown = ip rule del from $IP.29.0.0/16 lookup 13335 priority 10000
+PostUp = ip rule add fwmark 0x13335 lookup 13335 priority 9001 || true
+PostDown = ip rule del fwmark 0x13335 lookup 13335 priority 9001
 
 [Peer]
 PublicKey = $WARP_PUBLIC_KEY
@@ -77,10 +105,8 @@ Endpoint = $WARP_ENDPOINT" > $WARP_ANTIZAPRET_PATH
 
 	if [[ $? -eq 0 ]]; then
 		echo "Started $WARP_ANTIZAPRET_INTERFACE: $WARP_ENDPOINT connected"
-		ANTIZAPRET_OUT_INTERFACE=$WARP_ANTIZAPRET_INTERFACE
-		ANTIZAPRET_OUT_IP=$WARP_ADDRESS
 	else
-		echo "Starting $WARP_ANTIZAPRET_INTERFACE failed! Use $DEFAULT_INTERFACE"
+		echo "Starting $WARP_ANTIZAPRET_INTERFACE failed! WARP list will not work"
 	fi
 	set -e
 else
@@ -185,12 +211,14 @@ fi
 iptables -w -I FORWARD 2 -s $IP.28.0.0/15 -m set --match-set antizapret-drop dst -j DROP
 # Client and server isolation
 if [[ "$CLIENT_ISOLATION" == 'y' ]]; then
-	if [[ "$ANTIZAPRET_OUT_INTERFACE" == "$VPN_OUT_INTERFACE" ]]; then
-		iptables -w -I FORWARD 2 ! -i $ANTIZAPRET_OUT_INTERFACE -d $IP.28.0.0/15 -j DROP
-	else
-		iptables -w -I FORWARD 2 ! -i $ANTIZAPRET_OUT_INTERFACE -d $IP.29.0.0/16 -j DROP
-		iptables -w -I FORWARD 3 ! -i $VPN_OUT_INTERFACE -d $IP.28.0.0/16 -j DROP
-	fi
+	# У AntiZapret теперь три выхода, а не один, поэтому обратный трафик с аплинка и WARP
+	# нужно пропустить явно - иначе его убьёт правило ниже.
+	# ACCEPT'ы матчат -d, то есть трафик К клиентам, и не задевают torrent guard и antizapret-drop,
+	# которые матчат -s. Изоляция клиент<->клиент сохраняется
+	iptables -w -I FORWARD 2 -i $UPLINK_INTERFACE -d $IP.29.0.0/16 -j ACCEPT
+	iptables -w -I FORWARD 3 -i $WARP_ANTIZAPRET_INTERFACE -d $IP.29.0.0/16 -j ACCEPT
+	iptables -w -I FORWARD 4 ! -i $ANTIZAPRET_OUT_INTERFACE -d $IP.29.0.0/16 -j DROP
+	iptables -w -I FORWARD 5 ! -i $VPN_OUT_INTERFACE -d $IP.28.0.0/16 -j DROP
 	iptables -w -I INPUT 2 -s $IP.28.0.0/15 -p tcp ! --dport 53 -j DROP
 	iptables -w -I INPUT 3 -s $IP.28.0.0/15 -p udp ! --dport 53 -j DROP
 fi
@@ -248,6 +276,25 @@ fi
 iptables -w -I INPUT 2 -i $DEFAULT_INTERFACE -m set --match-set antizapret-deny src -j DROP
 
 # mangle
+# IP-адреса из списков АнтиЗапрета, у которых нет домена (диапазоны Cloudflare, Telegram и т.п.)
+{
+	echo 'create v2-route hash:net -exist'
+	echo 'flush v2-route'
+	if [[ -f result/route-ips.txt ]]; then
+		while read -r cidr; do
+			echo "add v2-route $cidr"
+		done < result/route-ips.txt
+	fi
+} | ipset restore
+# Routing marks
+# Метка ставится в mangle PREROUTING (приоритет -150), то есть до nat (-100), поэтому здесь
+# назначение - ещё fake IP, причём у всех пакетов соединения, а не только у первого.
+# Дальше метка выбирает таблицу маршрутизации: 13337 - аплинк, 13335 - WARP, без метки - байпас
+iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j MARK --set-mark 0x13337
+iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13337
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	iptables -w -t mangle -A PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j MARK --set-mark 0x13335
+fi
 # Clamp TCP MSS
 iptables -w -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 iptables -w -t mangle -A OUTPUT ! -o lo -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
@@ -292,13 +339,27 @@ if [[ "$VPN_DNS" == '1' ]]; then
 	iptables -w -t nat -A PREROUTING -s $IP.28.0.0/16 -p udp --dport 53 -j DNAT --to-destination 127.2.2.2
 	iptables -w -t nat -A PREROUTING -s $IP.28.0.0/16 -p tcp --dport 53 -j DNAT --to-destination 127.2.2.2
 fi
+# Mapping fake IP to real IP (WARP list)
+# Стоит до Restrict forwarding: после DNAT обход цепочки продолжается уже с реальным адресом
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	iptables -w -t nat -S V2-WARP-MAPPING &>/dev/null || iptables -w -t nat -N V2-WARP-MAPPING
+	iptables -w -t nat -A PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j V2-WARP-MAPPING
+fi
 # Restrict forwarding
 if [[ "$RESTRICT_FORWARD" == 'y' ]]; then
+	# Развёрнутый трафик WARP-ветки нельзя метить 0x1 - он не входит в antizapret-forward и его
+	# убило бы правило FORWARD. Второй -d в одном правиле iptables не принимает, поэтому исключаем
+	# по метке, поставленной в mangle
+	iptables -w -t nat -A PREROUTING -s $IP.29.0.0/16 -m mark --mark 0x13335 -j RETURN
 	iptables -w -t nat -A PREROUTING -s $IP.29.0.0/16 ! -d $FAKE_IP.0.0/15 -j CONNMARK --set-mark 0x1
 fi
 # Mapping fake IP to real IP
 iptables -w -t nat -S ANTIZAPRET-MAPPING &>/dev/null || iptables -w -t nat -N ANTIZAPRET-MAPPING
 iptables -w -t nat -A PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j ANTIZAPRET-MAPPING
+# SNAT/MASQUERADE uplink and WARP
+# MASQUERADE, а не SNAT: адрес берётся с интерфейса, у WARP он меняется при каждой регистрации
+iptables -w -t nat -A POSTROUTING -s $IP.29.0.0/16 -o $UPLINK_INTERFACE -j MASQUERADE
+iptables -w -t nat -A POSTROUTING -s $IP.29.0.0/16 -o $WARP_ANTIZAPRET_INTERFACE -j MASQUERADE
 # SNAT/MASQUERADE VPN
 if [[ "$ANTIZAPRET_OUT_INTERFACE" == "$VPN_OUT_INTERFACE" && "$ANTIZAPRET_OUT_IP" == "$VPN_OUT_IP" ]]; then
 	if [[ -z "$ANTIZAPRET_OUT_IP" ]]; then
@@ -342,7 +403,15 @@ for dev in $(ls /sys/class/net); do
 done
 
 # Clear Knot Resolver cache
+# Пустая цепочка означает, что маппинги потеряны, а в кэше могли остаться выданные ранее fake IP
+CLEAR_CACHE=0
 if [[ "$(iptables -w -t nat -S ANTIZAPRET-MAPPING | wc -l)" -eq 1 ]]; then
+	CLEAR_CACHE=1
+fi
+if [[ "$WARP_LIST_ENABLE" == 'y' && "$(iptables -w -t nat -S V2-WARP-MAPPING | wc -l)" -eq 1 ]]; then
+	CLEAR_CACHE=1
+fi
+if [[ "$CLEAR_CACHE" -eq 1 ]]; then
 	count="$(echo 'cache.clear()' | socat - /run/knot-resolver/control/1 | grep -oE '[0-9]+' || echo 0)"
 	echo "AntiZapret DNS cache cleared: $count entries"
 fi

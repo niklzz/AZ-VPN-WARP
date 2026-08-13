@@ -7,12 +7,13 @@ from dnslib import DNSRecord,RCODE,QTYPE,A
 from dnslib.server import DNSServer,DNSHandler,BaseResolver,DNSLogger,TCPServer
 
 class ProxyResolver(BaseResolver):
-    def __init__(self,address,port,timeout,ip_range,ttl):
+    def __init__(self,address,port,timeout,ip_range,ttl,chain):
         self._env=os.environ.copy()
+        self.chain=chain
         self.ip_pool={str(x) for x in IPv4Network(ip_range).hosts()}
         self.ip_map={}
         # Loading existing mappings
-        result=subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-S","ANTIZAPRET-MAPPING"],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=True,env=self._env)
+        result=subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-S",self.chain],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,check=True,env=self._env)
         now=time.time()
         for line in result.stdout.splitlines():
             parts=line.split()
@@ -23,7 +24,7 @@ class ProxyResolver(BaseResolver):
             if not self.mapping_ip(real_ip,fake_ip,now):
                 print("Restarting: Invalid loaded fake IPs mappings")
                 try:
-                    subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-F","ANTIZAPRET-MAPPING"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
+                    subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-F",self.chain],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
                 finally:
                     os._exit(1)
         print(f"Loaded: {len(self.ip_map)} fake IPs")
@@ -49,7 +50,7 @@ class ProxyResolver(BaseResolver):
             fake_ip=self.ip_pool.pop()
             self.ip_map[real_ip]={"fake_ip": fake_ip,"used": now}
         try:
-            subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-A","ANTIZAPRET-MAPPING","-d",fake_ip,"-j","DNAT","--to-destination",real_ip],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
+            subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-A",self.chain,"-d",fake_ip,"-j","DNAT","--to-destination",real_ip],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
         except Exception as e:
             print(f"Error: {e} (real_ip={real_ip} fake_ip={fake_ip})")
             with self.lock:
@@ -80,7 +81,7 @@ class ProxyResolver(BaseResolver):
                 print(f"Error: {e}")
                 print(f"Restarting: Cleanup fake IPs failed")
                 try:
-                    subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-F","ANTIZAPRET-MAPPING"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
+                    subprocess.run(["/usr/sbin/iptables","-w","-t","nat","-F",self.chain],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True,env=self._env)
                 finally:
                     os._exit(1)
 
@@ -95,7 +96,7 @@ class ProxyResolver(BaseResolver):
             for real_ip,fake_ip in cleanup_ips:
                 self.ip_pool.add(fake_ip)
                 del self.ip_map[real_ip]
-                rules.append(f"-D ANTIZAPRET-MAPPING -d {fake_ip} -j DNAT --to-destination {real_ip}")
+                rules.append(f"-D {self.chain} -d {fake_ip} -j DNAT --to-destination {real_ip}")
                 #print(f"Unmapping: {fake_ip} to {real_ip}")
         if cleanup_ips:
             rules.append("COMMIT")
@@ -152,12 +153,15 @@ if __name__=="__main__":
     p.add_argument("--ttl",type=int,default=1800,
                     metavar="<seconds>",
                     help="TTL in seconds for all records (default: 1800)")
+    p.add_argument("--chain",default="ANTIZAPRET-MAPPING",
+                    metavar="<name>",
+                    help="iptables nat chain holding the fake IP mappings (default:ANTIZAPRET-MAPPING)")
     args=p.parse_args()
     args.dns,_,args.dns_port=args.upstream.partition(":")
     args.dns_port=int(args.dns_port or 53)
     TCPServer.request_queue_size=128
     print("Starting Proxy Resolver...")
-    resolver=ProxyResolver(args.dns,args.dns_port,args.timeout,args.ip_range,args.ttl)
+    resolver=ProxyResolver(args.dns,args.dns_port,args.timeout,args.ip_range,args.ttl,args.chain)
     logger=DNSLogger(args.log,prefix=args.log_prefix)
     udp_server=DNSServer(resolver,
                            port=args.port,
@@ -172,6 +176,6 @@ if __name__=="__main__":
                            logger=logger,
                            handler=DNSHandler)
     tcp_server.start_thread()
-    print("Started Proxy Resolver: %s:%d -> %s:%d" % (args.address or "*",args.port,args.dns,args.dns_port))
+    print("Started Proxy Resolver: %s:%d -> %s:%d (%s %s)" % (args.address or "*",args.port,args.dns,args.dns_port,args.ip_range,args.chain))
     while udp_server.isAlive():
         time.sleep(1)

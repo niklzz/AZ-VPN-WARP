@@ -1,10 +1,22 @@
 #!/bin/bash
 #
-# Скрипт для установки на своём сервере AntiZapret VPN + полный VPN
+# V2 - скрипт для установки на своём сервере в России AntiZapret VPN + полный VPN
 #
-# https://github.com/GubernievS/AntiZapret-VPN
+# Трафик расходится на три пути:
+#   список AntiZapret  - через аплинк на зарубежный сервер
+#   свой WARP-список   - через Cloudflare WARP
+#   всё остальное      - в туннель не входит, идёт через провайдера клиента
+#
+# https://github.com/niklzz/az-vpn
 #
 export LC_ALL=C
+
+# Форк, из которого берётся код (см. update.sh)
+V2_REPO=niklzz/az-vpn
+# Профиль зарубежного сервера, который нужно положить сюда до запуска установщика
+UPLINK_SOURCE=/root/v2-uplink.conf
+UPLINK_INTERFACE=az
+UPLINK_PATH="/etc/amnezia/amneziawg/$UPLINK_INTERFACE.conf"
 
 # Проверка необходимости перезагрузить
 if [[ -f /var/run/reboot-required ]] || pidof apt apt-get dpkg unattended-upgrades &>/dev/null; then
@@ -47,6 +59,20 @@ else
 	exit 7
 fi
 
+# Проверка профиля зарубежного сервера
+# Без него сервер не сможет ни отдать заблокированные сайты, ни зарегистрировать WARP
+if [[ ! -f "$UPLINK_SOURCE" ]]; then
+	echo "Error: Uplink profile not found at $UPLINK_SOURCE!"
+	echo 'Create a client profile on your foreign WireGuard/AmneziaWG server and copy it here:'
+	echo "    scp foreign-server-client.conf root@$(hostname -I | awk '{print $1}'):$UPLINK_SOURCE"
+	exit 11
+fi
+
+if ! grep -q '^\[Peer\]' "$UPLINK_SOURCE" || ! grep -q '^Endpoint' "$UPLINK_SOURCE"; then
+	echo "Error: $UPLINK_SOURCE is not a valid WireGuard/AmneziaWG client profile!"
+	exit 12
+fi
+
 # Очистка диска
 echo 'Cleaning disk, please wait...'
 journalctl --vacuum-size=1B -q
@@ -79,9 +105,10 @@ if [[ -z "$DEFAULT_IP" ]]; then
 fi
 
 echo
-echo -e '\e[1;32mInstalling AntiZapret VPN + full VPN...\e[0m'
+echo -e '\e[1;32mInstalling V2: AntiZapret VPN + full VPN...\e[0m'
 echo 'OpenVPN + WireGuard + AmneziaWG'
-echo 'More details: https://github.com/GubernievS/AntiZapret-VPN'
+echo "Uplink profile: $UPLINK_SOURCE"
+echo "More details: https://github.com/$V2_REPO"
 echo
 
 MTU=$(< /sys/class/net/$DEFAULT_INTERFACE/mtu)
@@ -118,9 +145,16 @@ until [[ "$OPENVPN_DCO" =~ (y|n) ]]; do
 	read -rp 'Turn on OpenVPN DCO? [y/n]: ' -e -i y OPENVPN_DCO
 done
 echo
-until [[ "$ANTIZAPRET_WARP" =~ (y|n) ]]; do
-	read -rp $'Use Cloudflare WARP for \001\e[1;32m\002AntiZapret VPN\e[0m\002 (antizapret-*) outbound traffic? [y/n]: ' -e -i n ANTIZAPRET_WARP
+echo 'Domains from config/warp-hosts.txt are routed through Cloudflare WARP instead of the uplink'
+echo 'Use it for services that block Russian IPs but are not blocked in Russia'
+until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
+	read -rp $'Enable Cloudflare WARP for the \001\e[1;32m\002WARP list\e[0m\002 (warp-hosts.txt)? [y/n]: ' -e -i y WARP_LIST_ENABLE
 done
+echo
+echo "Personal access token for the private fork https://github.com/$V2_REPO"
+echo 'Leave empty if the repository is public. Input is hidden'
+read -rsp 'GitHub token: ' GITHUB_TOKEN
+echo
 echo
 until [[ "$VPN_WARP" =~ (y|n) ]]; do
 	read -rp $'Use Cloudflare WARP for \001\e[1;32m\002full VPN\e[0m\002 (vpn-*) outbound traffic? [y/n]: ' -e -i n VPN_WARP
@@ -304,6 +338,7 @@ systemctl stop apt-daily-upgrade.timer
 # Остановим и выключим обновляемые службы
 systemctl disable --now kresd@1
 systemctl disable --now kresd@2
+systemctl disable --now v2-warp-proxy
 systemctl disable --now antizapret
 systemctl disable --now antizapret-update.timer
 systemctl disable --now antizapret-update
@@ -409,7 +444,34 @@ if [[ "$OS" == 'ubuntu' ]] && (( VERSION < 26 )); then
 elif [[ "$OS" == 'debian' ]] && (( VERSION < 14 )); then
 	INSTALL="-t $CODENAME-backports linux-image-$ARCH linux-headers-$ARCH"
 fi
-apt-get install -y $INSTALL git openvpn iptables easy-rsa gawk knot-resolver idn sipcalc python3-pip wireguard diffutils socat lua-cqueues ipset irqbalance unattended-upgrades jq ethtool iproute2
+apt-get install -y $INSTALL git openvpn iptables easy-rsa gawk knot-resolver knot-dnsutils idn sipcalc python3-pip wireguard diffutils socat lua-cqueues ipset irqbalance unattended-upgrades jq ethtool iproute2
+
+# Ставим AmneziaWG - обычный WireGuard до зарубежного сервера из России не доходит
+if ! command -v awg-quick &>/dev/null; then
+	if [[ "$OS" == 'ubuntu' ]]; then
+		apt-get install -y software-properties-common
+		add-apt-repository -y ppa:amnezia/ppa
+		apt-get update
+		apt-get install -y amneziawg
+	else
+		# На Debian PPA нет, собираем userspace-реализацию и утилиты из исходников
+		apt-get install -y golang-go build-essential
+		rm -rf /tmp/amneziawg-go /tmp/amneziawg-tools
+		git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go.git /tmp/amneziawg-go
+		make -C /tmp/amneziawg-go
+		install -m 755 /tmp/amneziawg-go/amneziawg-go /usr/bin/amneziawg-go
+		git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools.git /tmp/amneziawg-tools
+		make -C /tmp/amneziawg-tools/src
+		make -C /tmp/amneziawg-tools/src install
+		rm -rf /tmp/amneziawg-go /tmp/amneziawg-tools
+	fi
+fi
+
+if ! command -v awg-quick &>/dev/null; then
+	echo 'Error: Failed to install AmneziaWG!'
+	exit 13
+fi
+
 apt-get autoremove --purge -y
 apt-get clean
 dpkg-reconfigure -f noninteractive unattended-upgrades
@@ -419,9 +481,9 @@ rm -rf /tmp/dnslib
 git clone https://github.com/paulc/dnslib.git /tmp/dnslib
 PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --force-reinstall --user /tmp/dnslib
 
-# Клонируем репозиторий antizapret
+# Клонируем репозиторий V2
 rm -rf /tmp/antizapret
-git clone https://github.com/GubernievS/AntiZapret-VPN.git /tmp/antizapret
+git clone "https://${GITHUB_TOKEN:+$GITHUB_TOKEN@}github.com/$V2_REPO.git" /tmp/antizapret
 
 # Сохраняем пользовательские настройки и обработчики custom*.sh
 cp /root/antizapret/config/*.txt /tmp/antizapret/setup/root/antizapret/config/ || true
@@ -453,6 +515,16 @@ rm -rf /root/config
 rm -rf /root/knot-resolver
 rm -rf /root/custom
 
+# Диапазоны подменных IPv4-адресов: заграничный и WARP всегда противоположны, чтобы не пересечься
+# Значения пишем конкретными - их читает systemd через EnvironmentFile, где подстановок по умолчанию нет
+if [[ "$ALTERNATIVE_FAKE_IP" == 'y' ]]; then
+	FAKE_IP=198.18
+	WARP_FAKE_IP="$IP.30"
+else
+	FAKE_IP="$IP.30"
+	WARP_FAKE_IP=198.18
+fi
+
 # Сохраняем настройки
 echo "SETUP_DATE=$(date --iso-8601=seconds)
 OPENVPN_UDP_ENABLE=$OPENVPN_UDP_ENABLE
@@ -460,8 +532,11 @@ OPENVPN_TCP_ENABLE=$OPENVPN_TCP_ENABLE
 WIREGUARD_ENABLE=$WIREGUARD_ENABLE
 OPENVPN_PATCH=$OPENVPN_PATCH
 OPENVPN_DCO=$OPENVPN_DCO
-ANTIZAPRET_WARP=$ANTIZAPRET_WARP
+UPLINK_ENABLE=y
+UPLINK_INTERFACE=$UPLINK_INTERFACE
+WARP_LIST_ENABLE=$WARP_LIST_ENABLE
 VPN_WARP=$VPN_WARP
+GITHUB_TOKEN=$GITHUB_TOKEN
 ANTIZAPRET_DNS=$ANTIZAPRET_DNS
 VPN_DNS=$VPN_DNS
 ANTIZAPRET_ADBLOCK=$ANTIZAPRET_ADBLOCK
@@ -504,7 +579,8 @@ ANTIZAPRET_OUT_IP=
 VPN_OUT_INTERFACE=
 VPN_OUT_IP=
 CLIENT_IP=
-FAKE_IP=" > /tmp/antizapret/setup/root/antizapret/setup
+FAKE_IP=$FAKE_IP
+WARP_FAKE_IP=$WARP_FAKE_IP" > /tmp/antizapret/setup/root/antizapret/setup
 
 # Создаем папки для кэша Knot Resolver
 mkdir -p /var/cache/knot-resolver
@@ -523,6 +599,29 @@ rm -rf /root/antizapret
 cp -r /tmp/antizapret/setup/* /
 rm -rf /tmp/dnslib
 rm -rf /tmp/antizapret
+
+# В настройках лежит токен GitHub, поэтому закрываем файл от всех кроме root
+chmod 600 /root/antizapret/setup
+
+# Готовим профиль аплинка до зарубежного сервера
+# DNS вырезаем, иначе awg-quick перепишет /etc/resolv.conf самого сервера
+# Table = 13337 обязателен, иначе AllowedIPs = 0.0.0.0/0 снесёт дефолтный маршрут и байпаса не будет
+# MTU снижаем: туннель клиента едет внутри туннеля до заграницы
+# Параметры обфускации AmneziaWG (Jc/Jmin/Jmax/S1/S2/H1..H4/I1) переносятся из профиля как есть
+mkdir -p /etc/amnezia/amneziawg
+{
+	echo '[Interface]'
+	echo 'MTU = 1320'
+	echo 'Table = 13337'
+	echo 'PostUp = ip rule add fwmark 0x13337 lookup 13337 priority 9000 || true'
+	echo 'PostDown = ip rule del fwmark 0x13337 lookup 13337 priority 9000'
+	sed -n '/^\[Interface\]/,/^\[Peer\]/p' "$UPLINK_SOURCE" | grep -viE '^[[:space:]]*(\[|DNS|MTU|Table|PostUp|PostDown)'
+	echo
+	echo '[Peer]'
+	echo 'AllowedIPs = 0.0.0.0/0'
+	sed -n '/^\[Peer\]/,$p' "$UPLINK_SOURCE" | grep -viE '^[[:space:]]*(\[|AllowedIPs)'
+} > "$UPLINK_PATH"
+chmod 600 "$UPLINK_PATH"
 
 # Настраиваем DNS в AntiZapret VPN
 if [[ "$ANTIZAPRET_DNS" != '1' ]]; then
@@ -560,11 +659,8 @@ elif [[ "$VPN_DNS" == '9' ]]; then
 	sed -i 's/1\.1\.1\.1, 1\.0\.0\.1/95.216.204.218, 80.253.249.40/' /etc/wireguard/templates/vpn-client*.conf
 fi
 
-# Не используем альтернативный диапазон подменных IPv4-адресов
-# 198.18.0.0/15 => 10.30.0.0/15 или 172.30.0.0/15
-if [[ "$ALTERNATIVE_FAKE_IP" == 'n' ]]; then
-	sed -i "s/198\.18\./${IP}\.30\./g" /root/antizapret/proxy.py
-fi
+# Диапазоны подменных IPv4-адресов proxy.py получает аргументом из FAKE_IP/WARP_FAKE_IP,
+# поэтому править его тело больше не нужно
 
 # Используем альтернативный диапазон клиентских IPv4-адресов
 # 10.28.0.0/15 => 172.28.0.0/15
@@ -604,6 +700,10 @@ systemctl enable kresd@2
 systemctl enable antizapret
 systemctl enable antizapret-update.timer
 systemctl enable antizapret-update
+if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+	# Цепочку V2-WARP-MAPPING создаёт up.sh, поэтому без WARP-ветки юнит запускать нельзя
+	systemctl enable v2-warp-proxy
+fi
 if [[ "$OPENVPN_UDP_ENABLE" == 'y' ]]; then
 	systemctl enable openvpn-server@antizapret-udp
 	systemctl enable openvpn-server@vpn-udp

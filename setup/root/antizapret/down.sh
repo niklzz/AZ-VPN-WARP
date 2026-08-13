@@ -33,15 +33,22 @@ fi
 
 [[ "$ALTERNATIVE_CLIENT_IP" == 'y' ]] && IP="${CLIENT_IP:-172}" || IP=10
 [[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && FAKE_IP="${FAKE_IP:-198.18}" || FAKE_IP="$IP.30"
+[[ "$ALTERNATIVE_FAKE_IP" == 'y' ]] && WARP_FAKE_IP="${WARP_FAKE_IP:-$IP.30}" || WARP_FAKE_IP="${WARP_FAKE_IP:-198.18}"
+
+UPLINK_INTERFACE="${UPLINK_INTERFACE:-az}"
+UPLINK_PATH="/etc/amnezia/amneziawg/$UPLINK_INTERFACE.conf"
 
 WARP_ANTIZAPRET_INTERFACE=warp-antizapret
 WARP_ANTIZAPRET_PATH="/etc/wireguard/$WARP_ANTIZAPRET_INTERFACE.conf"
 WARP_ANTIZAPRET_IP=$(awk -F'= ' '/^Address/{print $2; exit}' "$WARP_ANTIZAPRET_PATH")
+# В conf адрес записан с маской, а iptables --to-source её не принимает и молча не удаляет правило
+WARP_ANTIZAPRET_IP="${WARP_ANTIZAPRET_IP%%/*}"
 WARP_ANTIZAPRET_IP="${WARP_ANTIZAPRET_IP:-172.16.0.2}"
 
 WARP_VPN_INTERFACE=warp-vpn
 WARP_VPN_PATH="/etc/wireguard/$WARP_VPN_INTERFACE.conf"
 WARP_VPN_IP=$(awk -F'= ' '/^Address/{print $2; exit}' "$WARP_VPN_PATH")
+WARP_VPN_IP="${WARP_VPN_IP%%/*}"
 WARP_VPN_IP="${WARP_VPN_IP:-172.16.0.2}"
 
 # filter
@@ -64,6 +71,8 @@ iptables -w -D FORWARD -s $IP.29.0.0/16 -m connmark --mark 0x1 -m set ! --match-
 # Drop forwarding
 iptables -w -D FORWARD -s $IP.28.0.0/15 -m set --match-set antizapret-drop dst -j DROP
 # Client and server isolation
+iptables -w -D FORWARD -i $UPLINK_INTERFACE -d $IP.29.0.0/16 -j ACCEPT
+iptables -w -D FORWARD -i $WARP_ANTIZAPRET_INTERFACE -d $IP.29.0.0/16 -j ACCEPT
 iptables -w -D FORWARD ! -i $ANTIZAPRET_OUT_INTERFACE -d $IP.28.0.0/15 -j DROP
 iptables -w -D FORWARD ! -i $ANTIZAPRET_OUT_INTERFACE -d $IP.29.0.0/16 -j DROP
 iptables -w -D FORWARD ! -i $WARP_ANTIZAPRET_INTERFACE -d $IP.29.0.0/16 -j DROP
@@ -96,6 +105,10 @@ ip6tables -w -D OUTPUT -o $DEFAULT_INTERFACE -p icmpv6 --icmpv6-type port-unreac
 iptables -w -D INPUT -i $DEFAULT_INTERFACE -m set --match-set antizapret-deny src -j DROP
 
 # mangle
+# Routing marks
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j MARK --set-mark 0x13337
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -m set --match-set v2-route dst -j MARK --set-mark 0x13337
+iptables -w -t mangle -D PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j MARK --set-mark 0x13335
 # Clamp TCP MSS
 iptables -w -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 iptables -w -t mangle -D OUTPUT ! -o lo -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
@@ -132,10 +145,15 @@ iptables -w -t nat -D PREROUTING -s $IP.29.0.0/16 -p tcp --dport 53 -j DNAT --to
 # VPN DNS redirection to Knot Resolver
 iptables -w -t nat -D PREROUTING -s $IP.28.0.0/16 -p udp --dport 53 -j DNAT --to-destination 127.2.2.2
 iptables -w -t nat -D PREROUTING -s $IP.28.0.0/16 -p tcp --dport 53 -j DNAT --to-destination 127.2.2.2
+# Mapping fake IP to real IP (WARP list)
+iptables -w -t nat -D PREROUTING -s $IP.29.0.0/16 -d $WARP_FAKE_IP.0.0/15 -j V2-WARP-MAPPING
 # Restrict forwarding
+iptables -w -t nat -D PREROUTING -s $IP.29.0.0/16 -m mark --mark 0x13335 -j RETURN
 iptables -w -t nat -D PREROUTING -s $IP.29.0.0/16 ! -d $FAKE_IP.0.0/15 -j CONNMARK --set-mark 0x1
 # Mapping fake IP to real IP
 iptables -w -t nat -D PREROUTING -s $IP.29.0.0/16 -d $FAKE_IP.0.0/15 -j ANTIZAPRET-MAPPING
+# SNAT/MASQUERADE uplink and WARP
+iptables -w -t nat -D POSTROUTING -s $IP.29.0.0/16 -o $UPLINK_INTERFACE -j MASQUERADE
 # SNAT/MASQUERADE VPN
 iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/15 -o $ANTIZAPRET_OUT_INTERFACE -j MASQUERADE
 iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/15 -o $ANTIZAPRET_OUT_INTERFACE -j SNAT --to-source $ANTIZAPRET_OUT_IP
@@ -147,6 +165,14 @@ iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/16 -o $VPN_OUT_INTERFACE -j MASQ
 iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/16 -o $VPN_OUT_INTERFACE -j SNAT --to-source $VPN_OUT_IP
 iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/16 -o $WARP_VPN_INTERFACE -j MASQUERADE
 iptables -w -t nat -D POSTROUTING -s $IP.28.0.0/16 -o $WARP_VPN_INTERFACE -j SNAT --to-source $WARP_VPN_IP
+
+# Uplink
+if [[ -f $UPLINK_PATH ]]; then
+	awg-quick down $UPLINK_INTERFACE
+fi
+if ip link show dev $UPLINK_INTERFACE &>/dev/null; then
+	ip link delete dev $UPLINK_INTERFACE
+fi
 
 # WARP AntiZapret
 if [[ -f $WARP_ANTIZAPRET_PATH ]]; then

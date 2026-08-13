@@ -1,0 +1,17 @@
+[Unit]
+Description=AntiZapret VPN WARP list resolver
+# Цепочку V2-WARP-MAPPING создаёт up.sh, который запускается как ExecStartPre антизапрета
+BindsTo=antizapret.service
+After=antizapret.service
+
+[Service]
+LimitNPROC=infinity
+TasksMax=infinity
+LimitNOFILE=infinity
+WorkingDirectory=/root/antizapret
+EnvironmentFile=/root/antizapret/setup
+ExecStart=/root/antizapret/proxy.py --address 127.4.4.4 --chain V2-WARP-MAPPING --ip-range ${WARP_FAKE_IP}.0.0/15
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

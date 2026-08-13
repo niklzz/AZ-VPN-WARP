@@ -9,8 +9,9 @@ LimitNPROC=infinity
 TasksMax=infinity
 LimitNOFILE=infinity
 WorkingDirectory=/root/antizapret
+EnvironmentFile=/root/antizapret/setup
 ExecStartPre=/root/antizapret/up.sh
-ExecStart=/root/antizapret/proxy.py
+ExecStart=/root/antizapret/proxy.py --ip-range ${FAKE_IP}.0.0/15
 ExecStopPost=/root/antizapret/down.sh
 Restart=on-failure
 
