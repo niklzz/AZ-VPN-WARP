@@ -68,10 +68,52 @@ fi
 # WARP AntiZapret
 WARP_ANTIZAPRET_INTERFACE=warp-antizapret
 WARP_ANTIZAPRET_PATH="/etc/wireguard/$WARP_ANTIZAPRET_INTERFACE.conf"
+# Готовый профиль WARP с обфускацией AmneziaWG - кладётся рядом с профилем аплинка
+WARP_SOURCE="${WARP_SOURCE:-/root/v2-warp.conf}"
+WARP_ANTIZAPRET_AWG_PATH="/etc/amnezia/amneziawg/$WARP_ANTIZAPRET_INTERFACE.conf"
 
-if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
+if [[ "$WARP_LIST_ENABLE" == 'y' && -f "$WARP_SOURCE" ]]; then
+	# Профиль с обфускацией: туннель идёт байпасом и Cloudflare отдаёт российский адрес.
+	# Самостоятельная регистрация так не умеет - она даёт чистый WireGuard, чей handshake
+	# опознаётся ТСПУ и режется, а спрятать его в аплинк значит получить адрес страны аплинка
+	set +e
+	echo "Starting $WARP_ANTIZAPRET_INTERFACE from $WARP_SOURCE..."
+	rm -f $WARP_ANTIZAPRET_PATH
+	mkdir -p /etc/amnezia/amneziawg
+	# DNS вырезаем, иначе awg-quick перепишет /etc/resolv.conf самого сервера,
+	# Table и метка обязательны - по ним WARP-ветка и находит свой маршрут
+	{
+		echo '[Interface]'
+		echo 'Table = 13335'
+		echo 'PostUp = ip rule add fwmark 0x13335 lookup 13335 priority 9001 || true'
+		echo 'PostDown = ip rule del fwmark 0x13335 lookup 13335 priority 9001'
+		sed -n '/^\[Interface\]/,/^\[Peer\]/p' "$WARP_SOURCE" | grep -viE '^[[:space:]]*(\[|DNS|Table|PostUp|PostDown)'
+		echo
+		echo '[Peer]'
+		echo 'AllowedIPs = 0.0.0.0/0'
+		sed -n '/^\[Peer\]/,$p' "$WARP_SOURCE" | grep -viE '^[[:space:]]*(\[|AllowedIPs)'
+	} > "$WARP_ANTIZAPRET_AWG_PATH"
+	chmod 600 "$WARP_ANTIZAPRET_AWG_PATH"
+
+	awg-quick up $WARP_ANTIZAPRET_INTERFACE 2>/dev/null
+
+	# wg-quick рапортует об успехе и на молчащем endpoint - интерфейс UP, tx растёт, rx нулевой,
+	# и WARP-ветка тихо не работает. Поэтому ждём именно handshake, а не код возврата
+	for _ in $(seq 1 10); do
+		[[ "$(awg show $WARP_ANTIZAPRET_INTERFACE latest-handshakes | awk '{print $2}')" != 0 ]] && break
+		sleep 1
+	done
+
+	if [[ "$(awg show $WARP_ANTIZAPRET_INTERFACE latest-handshakes | awk '{print $2}')" != 0 ]]; then
+		echo "Started $WARP_ANTIZAPRET_INTERFACE: obfuscated profile connected"
+	else
+		echo "Started $WARP_ANTIZAPRET_INTERFACE, but no handshake! Check Endpoint in $WARP_SOURCE"
+	fi
+	set -e
+elif [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	set +e
 	echo "Starting $WARP_ANTIZAPRET_INTERFACE..."
+	rm -f $WARP_ANTIZAPRET_AWG_PATH
 	WARP_PRIVATE_KEY=$(wg genkey)
 	KEY=$(echo "$WARP_PRIVATE_KEY" | wg pubkey)
 	# api.cloudflareclient.com из России недоступен, а его имя может не резолвиться местным
@@ -87,17 +129,22 @@ if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	WARP_ENDPOINT=$(echo "$REG" | jq -r '.config.peers[0].endpoint.host')
 	WARP_ADDRESS=$(echo "$REG" | jq -r '.config.interface.addresses.v4')
 
-	# Регистрация ушла в аплинк, а сам туннель пошёл бы по main - то есть напрямую из России,
-	# где Cloudflare недоступен, и handshake не случится. Endpoint приходит именем, поэтому
-	# резолвим его через прибитый к аплинку 1.1.1.1, фиксируем IP в конфиге (иначе wg-quick
-	# возьмёт из A-записи другой адрес мимо маршрута) и уводим этот IP в аплинк
+	# Сам туннель идёт байпасом, а не в аплинк: Cloudflare выдаёт адрес той страны, из которой
+	# пришли пакеты, а от WARP-ветки нужен российский выход - уведёшь в аплинк, получишь адрес
+	# страны аплинка, и смысл ветки теряется. Регистрация выше - наоборот, только через аплинк:
+	# api.cloudflareclient.com из России не отвечает вовсе.
+	# Порт из ответа Cloudflare (2408) из России не проходит - он опознаётся как WARP и режется,
+	# handshake молчит при живом интерфейсе. Тот же endpoint слушает и на 500/1701/4500,
+	# из них проходит 500 (его же занимает IKE, поэтому не режут). Заблокируют 500 - меняй
+	# WARP_PORT в /root/antizapret/setup, перебрав 4500 и 1701
+	# ponytail: порт зашит один, без автоперебора - список кандидатов появится, если 500 отвалится
+	WARP_PORT="${WARP_PORT:-500}"
+	# Endpoint приходит именем, а локальный резолвер возвращает адреса, часть которых молчит,
+	# поэтому резолвим через прибитый к аплинку 1.1.1.1 и фиксируем IP в конфиге
 	# ponytail: только IPv4 - IPv6 в системе отключён setup.sh
 	WARP_ENDPOINT_IP="${WARP_ENDPOINT%:*}"
 	[[ "$WARP_ENDPOINT_IP" =~ ^[0-9.]+$ ]] || WARP_ENDPOINT_IP=$(kdig +short +time=3 +retry=1 @1.1.1.1 "${WARP_ENDPOINT%:*}" | grep -m1 -E '^[0-9.]+$')
-	if [[ -n "$WARP_ENDPOINT_IP" ]]; then
-		ip route replace "$WARP_ENDPOINT_IP" dev $UPLINK_INTERFACE
-		WARP_ENDPOINT="$WARP_ENDPOINT_IP:${WARP_ENDPOINT##*:}"
-	fi
+	[[ -n "$WARP_ENDPOINT_IP" ]] && WARP_ENDPOINT="$WARP_ENDPOINT_IP:$WARP_PORT"
 
 	echo "[Interface]
 PrivateKey = $WARP_PRIVATE_KEY
@@ -116,13 +163,24 @@ Endpoint = $WARP_ENDPOINT" > $WARP_ANTIZAPRET_PATH
 	wg-quick up $WARP_ANTIZAPRET_PATH 2>/dev/null
 
 	if [[ $? -eq 0 ]]; then
-		echo "Started $WARP_ANTIZAPRET_INTERFACE: $WARP_ENDPOINT connected"
+		# wg-quick рапортует об успехе и на молчащем endpoint - интерфейс UP, tx растёт, rx нулевой,
+		# и WARP-ветка тихо не работает. Поэтому ждём именно handshake, а не код возврата
+		for _ in $(seq 1 10); do
+			[[ "$(wg show $WARP_ANTIZAPRET_INTERFACE latest-handshakes | awk '{print $2}')" != 0 ]] && break
+			sleep 1
+		done
+
+		if [[ "$(wg show $WARP_ANTIZAPRET_INTERFACE latest-handshakes | awk '{print $2}')" != 0 ]]; then
+			echo "Started $WARP_ANTIZAPRET_INTERFACE: $WARP_ENDPOINT connected"
+		else
+			echo "Started $WARP_ANTIZAPRET_INTERFACE, but no handshake with $WARP_ENDPOINT! WARP list will not work - try another WARP_PORT (4500, 1701)"
+		fi
 	else
 		echo "Starting $WARP_ANTIZAPRET_INTERFACE failed! WARP list will not work"
 	fi
 	set -e
 else
-	rm -f $WARP_ANTIZAPRET_PATH
+	rm -f $WARP_ANTIZAPRET_PATH $WARP_ANTIZAPRET_AWG_PATH
 fi
 
 # WARP VPN

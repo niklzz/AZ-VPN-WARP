@@ -40,7 +40,9 @@ UPLINK_PATH="/etc/amnezia/amneziawg/$UPLINK_INTERFACE.conf"
 
 WARP_ANTIZAPRET_INTERFACE=warp-antizapret
 WARP_ANTIZAPRET_PATH="/etc/wireguard/$WARP_ANTIZAPRET_INTERFACE.conf"
-WARP_ANTIZAPRET_IP=$(awk -F'= ' '/^Address/{print $2; exit}' "$WARP_ANTIZAPRET_PATH")
+WARP_ANTIZAPRET_AWG_PATH="/etc/amnezia/amneziawg/$WARP_ANTIZAPRET_INTERFACE.conf"
+# Адрес берём из того профиля, который реально поднят
+WARP_ANTIZAPRET_IP=$(awk -F'= ' '/^Address/{print $2; exit}' "$WARP_ANTIZAPRET_AWG_PATH" "$WARP_ANTIZAPRET_PATH" 2>/dev/null)
 # В conf адрес записан с маской, а iptables --to-source её не принимает и молча не удаляет правило
 WARP_ANTIZAPRET_IP="${WARP_ANTIZAPRET_IP%%/*}"
 WARP_ANTIZAPRET_IP="${WARP_ANTIZAPRET_IP:-172.16.0.2}"
@@ -175,7 +177,11 @@ if ip link show dev $UPLINK_INTERFACE &>/dev/null; then
 fi
 
 # WARP AntiZapret
-if [[ -f $WARP_ANTIZAPRET_PATH ]]; then
+# Профиль бывает двух видов: обфусцированный AmneziaWG из /root/v2-warp.conf и сгенерированный
+# чистый WireGuard - опускать их надо разными инструментами
+if [[ -f $WARP_ANTIZAPRET_AWG_PATH ]]; then
+	awg-quick down $WARP_ANTIZAPRET_INTERFACE
+elif [[ -f $WARP_ANTIZAPRET_PATH ]]; then
 	wg-quick down $WARP_ANTIZAPRET_PATH
 fi
 if ip link show dev $WARP_ANTIZAPRET_INTERFACE &>/dev/null; then
