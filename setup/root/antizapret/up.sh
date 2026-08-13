@@ -87,6 +87,18 @@ if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	WARP_ENDPOINT=$(echo "$REG" | jq -r '.config.peers[0].endpoint.host')
 	WARP_ADDRESS=$(echo "$REG" | jq -r '.config.interface.addresses.v4')
 
+	# Регистрация ушла в аплинк, а сам туннель пошёл бы по main - то есть напрямую из России,
+	# где Cloudflare недоступен, и handshake не случится. Endpoint приходит именем, поэтому
+	# резолвим его через прибитый к аплинку 1.1.1.1, фиксируем IP в конфиге (иначе wg-quick
+	# возьмёт из A-записи другой адрес мимо маршрута) и уводим этот IP в аплинк
+	# ponytail: только IPv4 - IPv6 в системе отключён setup.sh
+	WARP_ENDPOINT_IP="${WARP_ENDPOINT%:*}"
+	[[ "$WARP_ENDPOINT_IP" =~ ^[0-9.]+$ ]] || WARP_ENDPOINT_IP=$(kdig +short +time=3 +retry=1 @1.1.1.1 "${WARP_ENDPOINT%:*}" | grep -m1 -E '^[0-9.]+$')
+	if [[ -n "$WARP_ENDPOINT_IP" ]]; then
+		ip route replace "$WARP_ENDPOINT_IP" dev $UPLINK_INTERFACE
+		WARP_ENDPOINT="$WARP_ENDPOINT_IP:${WARP_ENDPOINT##*:}"
+	fi
+
 	echo "[Interface]
 PrivateKey = $WARP_PRIVATE_KEY
 Address = $WARP_ADDRESS/32
