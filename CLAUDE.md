@@ -10,11 +10,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Отличие от апстрима: сервер ставится **внутри России** и разводит трафик по трём путям вместо одного.
 
-| путь | что попадает | метка | таблица | выход |
-|---|---|---|---|---|
-| байпас | всё, что не в списках | — | main | провайдер клиента (в туннель не входит) |
-| заграница | список АнтиЗапрета | `0x13337` | 13337 | аплинк `az` (AmneziaWG) |
-| WARP | `config/warp-hosts.txt` | `0x13335` | 13335 | `warp-antizapret` |
+| путь | что попадает | пул fake IP | метка | таблица | выход |
+|---|---|---|---|---|---|
+| байпас | всё, что не в списках | — | — | main | провайдер клиента (в туннель не входит) |
+| заграница | `config/uplink-hosts.txt` (ручной, **приоритет**) | `FAKE_IP` = 198.18/15 | `0x13337` | 13337 | аплинк `az` (AmneziaWG) |
+| WARP | список АнтиЗапрета (реестр РКН) | `WARP_FAKE_IP` = 10.30/15 | `0x13335` | 13335 | `warp-antizapret`, российский адрес Cloudflare |
+
+**Список АнтиЗапрета идёт через WARP, а не за границу.** Обфусцированный туннель прячет его от DPI,
+и этого достаточно для обхода блокировок, а выходной адрес остаётся российским — многие ресурсы
+отдают россиянам контент лучше, чем хостинговым IP. Зарубежный аплинк возит только то, что вписано
+руками в `uplink-hosts.txt`: сервисы, недоступные из России по геолокации. Приоритет у аплинка —
+домен, попавший в оба списка, уходит за границу; обеспечивается порядком политик в `kresd.conf`
+(`uplink.rpz` добавляется раньше `proxy.rpz`). Голые IP из ipset `v2-route` (Cloudflare, Telegram —
+у них нет домена) метятся в WARP вместе со всем списком.
 
 Зарубежный сервер — **тупая выходная нода**: любой WG/AWG-сервер, от него нужен только клиентский
 профиль и NAT своих пиров в интернет. Вся логика (kresd, `proxy.py`, fake-IP, DNAT, списки) — на RU-сервере.
@@ -66,10 +74,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. Клиент AntiZapret (`10.29.0.0/16`) шлёт DNS-запрос → `iptables nat PREROUTING` DNAT'ит его на `127.1.1.1`
    ([up.sh](setup/root/antizapret/up.sh)) — это **kresd@1**.
 2. **kresd@1** ([kresd.conf](setup/etc/knot-resolver/kresd.conf), ветка `SYSTEMD_INSTANCE ^1`) применяет
-   два RPZ подряд: сначала `warp.rpz` → `policy.STUB('127.4.4.4')`, потом `proxy.rpz` → `policy.STUB('127.3.3.3')`.
-   **Порядок и есть приоритет:** политики kresd проверяются в порядке добавления, поэтому домен из обоих
-   списков уходит в WARP. Не попавшие никуда резолвятся российскими апстримами (`dns1`),
-   AAAA всегда `::`, HTTPS/SVCB — NODATA.
+   два RPZ подряд: сначала `uplink.rpz` → `policy.STUB('127.3.3.3')` (аплинк), потом `proxy.rpz` →
+   `policy.STUB('127.4.4.4')` (WARP). **Порядок и есть приоритет:** политики kresd проверяются в порядке
+   добавления, поэтому домен из обоих списков уходит за границу. Не попавшие никуда резолвятся российскими
+   апстримами (`dns1`), AAAA всегда `::`, HTTPS/SVCB — NODATA.
 3. **proxy.py** ([proxy.py](setup/root/antizapret/proxy.py)) — два экземпляра одного файла, различаются только
    аргументами `--address` / `--chain` / `--ip-range` (юниты `antizapret.service` и `v2-warp-proxy.service`).
    Оба спрашивают **kresd@2** (`127.2.2.2`), берут реальный A-адрес, выдают клиенту **fake IP** из своего пула
@@ -123,10 +131,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   (`bol-van/rulist`, `antifilter.download`), AdGuard/OISD для adblock, плюс курируемые списки из этой репы.
   При провале прямого запроса ретрай через `api.codetabs.com` прокси; после скачивания сверяется `Content-Length`.
 - **`parse.sh`** — вся логика фильтрации. Собирает `config/*.txt` + `download/*.txt` → `result/`:
-  - `result/include-hosts.txt` → `/etc/knot-resolver/proxy.rpz` (что гнать через АнтиЗапрет);
+  - `result/include-hosts.txt` → `/etc/knot-resolver/proxy.rpz` (реестр РКН, едет через **WARP**);
     попутно чистит казино/букмекеров regex'ом (`CLEAR_HOSTS`), схлопывает избыточные поддомены через `rev`+`sort`+`awk`.
-  - `config/warp-hosts.txt` → `result/warp-hosts.txt` → `/etc/knot-resolver/warp.rpz` (что гнать через WARP).
-    Только пользовательский файл, скачиваемых источников у этого списка нет.
+  - `config/uplink-hosts.txt` → `result/uplink-hosts.txt` → `/etc/knot-resolver/uplink.rpz` (что гнать через
+    **зарубежный аплинк**). Только пользовательский файл, скачиваемых источников у этого списка нет,
+    и он имеет приоритет над реестром.
   - `result/route-ips.txt` → `ccd/DEFAULT` (push route для OpenVPN), `/etc/wireguard/ips` (для AllowedIPs),
     плюс готовые файлы маршрутов для TP-Link / Keenetic / MikroTik. В маршруты клиента идут **оба**
     fake-диапазона — иначе WARP-ветка до сервера не доедет.

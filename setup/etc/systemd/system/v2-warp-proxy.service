@@ -1,5 +1,5 @@
 [Unit]
-Description=AntiZapret VPN WARP list resolver
+Description=AntiZapret VPN WARP branch resolver
 # Цепочку V2-WARP-MAPPING создаёт up.sh, который запускается как ExecStartPre антизапрета
 BindsTo=antizapret.service
 After=antizapret.service

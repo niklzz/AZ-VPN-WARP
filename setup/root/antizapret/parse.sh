@@ -286,20 +286,22 @@ if [[ -z "$1" || "$1" == 'host' || "$1" == 'hosts' || "$1" == 'noclear' || "$1" 
 		sleep 5
 	fi
 
-	# Обрабатываем список доменов для маршрутизации через WARP
-	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d; s/[]_~:/?#\[@!$&'\''()*+,;=].*//; s/.*/\L&/' config/*warp-hosts.txt | sort -u > result/warp-hosts.txt
+	# Обрабатываем список доменов для маршрутизации через зарубежный сервер.
+	# Список ручной: всё, что нашлось в реестре, и так идёт через WARP, а сюда добавляют то,
+	# чему нужен именно заграничный IP. Этот список имеет приоритет - см. порядок в kresd.conf
+	sed -E 's/[\r[:space:]]+//g; /^[[:punct:]]/d; /^$/d; s/[]_~:/?#\[@!$&'\''()*+,;=].*//; s/.*/\L&/' config/*uplink-hosts.txt | sort -u > result/uplink-hosts.txt
 
 	# Выводим результат
-	echo "$(wc -l < result/warp-hosts.txt) - warp-hosts.txt"
+	echo "$(wc -l < result/uplink-hosts.txt) - uplink-hosts.txt"
 
-	# Создаем файл warp.rpz для Knot Resolver
-	echo -e '$TTL 10800\n@ SOA . . (1 1 1 1 10800)' > result/warp.rpz
-	sed 's/$/ CNAME ./; p; s/^/*./' result/warp-hosts.txt >> result/warp.rpz
+	# Создаем файл uplink.rpz для Knot Resolver
+	echo -e '$TTL 10800\n@ SOA . . (1 1 1 1 10800)' > result/uplink.rpz
+	sed 's/$/ CNAME ./; p; s/^/*./' result/uplink-hosts.txt >> result/uplink.rpz
 
-	# Обновляем файл warp.rpz в Knot Resolver только если файл изменился
-	if [[ -f result/warp.rpz ]] && ! diff -q result/warp.rpz /etc/knot-resolver/warp.rpz; then
-		cp -f result/warp.rpz /etc/knot-resolver/warp.rpz.tmp
-		mv -f /etc/knot-resolver/warp.rpz.tmp /etc/knot-resolver/warp.rpz
+	# Обновляем файл uplink.rpz в Knot Resolver только если файл изменился
+	if [[ -f result/uplink.rpz ]] && ! diff -q result/uplink.rpz /etc/knot-resolver/uplink.rpz; then
+		cp -f result/uplink.rpz /etc/knot-resolver/uplink.rpz.tmp
+		mv -f /etc/knot-resolver/uplink.rpz.tmp /etc/knot-resolver/uplink.rpz
 		sleep 5
 	fi
 

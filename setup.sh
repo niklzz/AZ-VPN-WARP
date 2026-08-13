@@ -145,10 +145,12 @@ until [[ "$OPENVPN_DCO" =~ (y|n) ]]; do
 	read -rp 'Turn on OpenVPN DCO? [y/n]: ' -e -i y OPENVPN_DCO
 done
 echo
-echo 'Domains from config/warp-hosts.txt are routed through Cloudflare WARP instead of the uplink'
-echo 'Use it for services that block Russian IPs but are not blocked in Russia'
+echo 'The AntiZapret list goes out through Cloudflare WARP: the obfuscated tunnel hides it from DPI'
+echo 'while the exit address stays Russian. Requires an obfuscated profile at /root/v2-warp.conf'
+echo 'Domains from config/uplink-hosts.txt keep going through the uplink and take priority -'
+echo 'put there whatever needs a foreign IP'
 until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
-	read -rp $'Enable Cloudflare WARP for the \001\e[1;32m\002WARP list\e[0m\002 (warp-hosts.txt)? [y/n]: ' -e -i y WARP_LIST_ENABLE
+	read -rp $'Route the \001\e[1;32m\002AntiZapret list\e[0m\002 through Cloudflare WARP? [y/n]: ' -e -i y WARP_LIST_ENABLE
 done
 echo
 echo "Personal access token for the private fork https://github.com/$V2_REPO"
