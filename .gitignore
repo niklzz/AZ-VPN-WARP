@@ -1,2 +1,6 @@
 # Client/uplink profiles hold private keys — the repo root is where they land
 /*.conf
+
+# Local-only notes, not part of the published project
+/CLAUDE.md
+/HOME-SETUP.md
