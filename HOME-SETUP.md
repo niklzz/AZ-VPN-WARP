@@ -50,10 +50,11 @@ ls /root/antizapret/client/amneziawg/vpn/  # нужен профиль vpn-*, н
 
 ```bash
 scp 'root@ЗАРУБЕЖНЫЙ:/root/antizapret/client/amneziawg/vpn/vpn-nas-(*)-am.conf' /tmp/uplink.conf
-scp /tmp/uplink.conf root@VM:/root/v2-uplink.conf
+scp /tmp/uplink.conf root@VM:/root/
 ```
 
-Без `/root/v2-uplink.conf` установщик остановится с кодом 11.
+Имя файла не важно: установщик берёт любой WG/AWG-профиль из `/root`, а если их там несколько —
+спрашивает, какой из них аплинк. Не нашёл ни одного — остановится с кодом 11.
 
 ## 2. Установка
 
@@ -73,7 +74,7 @@ bash setup.sh
 | вопрос | ответ | почему |
 |---|---|---|
 | `Route the AntiZapret list through Cloudflare WARP?` | `y` | ради этого всё и делалось |
-| `Nodes:` (узлы Cloudflare) | `HEL` или Enter | вслепую; реальный выбор — шаг 5 |
+| `Preferred nodes:` (узлы Cloudflare) | Enter (пусто) | это только список для автовосстановления; реальный выбор узла — шаг 5 |
 | `GitHub token:` | Enter | репозиторий публичный, токен не нужен |
 | `DNS choice` для **full VPN** | **не 1**, например `4` (Yandex) | при `1` полный VPN получит заграничный DNS при российском выходе |
 | `domain name for this OpenVPN server` | внешний IP или DDNS-имя | **важно за NAT** |

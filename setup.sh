@@ -13,7 +13,8 @@ export LC_ALL=C
 
 # Форк, из которого берётся код (см. update.sh)
 V2_REPO=niklzz/az-vpn
-# Профиль зарубежного сервера, который нужно положить сюда до запуска установщика
+# Профиль зарубежного сервера. Имя не обязательное: если этого файла нет,
+# установщик подберёт любой WG/AWG-профиль из /root (см. проверку ниже)
 UPLINK_SOURCE=/root/v2-uplink.conf
 UPLINK_INTERFACE=az
 UPLINK_PATH="/etc/amnezia/amneziawg/$UPLINK_INTERFACE.conf"
@@ -60,15 +61,43 @@ else
 fi
 
 # Проверка профиля зарубежного сервера
-# Без него сервер не сможет ни отдать заблокированные сайты, ни зарегистрировать WARP
+# Без него сервер не сможет ни отдать заблокированные сайты, ни зарегистрировать WARP.
+# Имя файла не важно: нет v2-uplink.conf - берём любой валидный *.conf из /root, чтобы
+# скачанный с зарубежного сервера профиль не приходилось переименовывать. v2-warp.conf
+# исключён явно: по формату он от аплинка не отличим и подхватился бы по ошибке
+is_wg_profile() {
+	grep -q '^\[Peer\]' "$1" && grep -q '^Endpoint' "$1"
+}
+
 if [[ ! -f "$UPLINK_SOURCE" ]]; then
-	echo "Error: Uplink profile not found at $UPLINK_SOURCE!"
-	echo 'Create a client profile on your foreign WireGuard/AmneziaWG server and copy it here:'
-	echo "    scp foreign-server-client.conf root@$(hostname -I | awk '{print $1}'):$UPLINK_SOURCE"
-	exit 11
+	FOUND=()
+	for CONF in /root/*.conf; do
+		if [[ -f "$CONF" && "$CONF" != '/root/v2-warp.conf' ]] && is_wg_profile "$CONF"; then
+			FOUND+=("$CONF")
+		fi
+	done
+
+	if (( ${#FOUND[@]} == 1 )); then
+		UPLINK_SOURCE="${FOUND[0]}"
+	elif (( ${#FOUND[@]} > 1 )); then
+		echo 'Several WireGuard/AmneziaWG profiles found in /root:'
+		for i in "${!FOUND[@]}"; do
+			printf '    %d) %s\n' "$((i + 1))" "${FOUND[i]}"
+		done
+		until [[ "$CHOICE" =~ ^[0-9]+$ ]] && (( CHOICE >= 1 && CHOICE <= ${#FOUND[@]} )); do
+			read -rp "Which one is the uplink profile? [1-${#FOUND[@]}]: " -e -i 1 CHOICE
+		done
+		UPLINK_SOURCE="${FOUND[CHOICE - 1]}"
+		echo
+	else
+		echo 'Error: Uplink profile not found!'
+		echo 'Create a client profile on your foreign WireGuard/AmneziaWG server and copy it to /root:'
+		echo "    scp foreign-server-client.conf root@$(hostname -I | awk '{print $1}'):/root/"
+		exit 11
+	fi
 fi
 
-if ! grep -q '^\[Peer\]' "$UPLINK_SOURCE" || ! grep -q '^Endpoint' "$UPLINK_SOURCE"; then
+if ! is_wg_profile "$UPLINK_SOURCE"; then
 	echo "Error: $UPLINK_SOURCE is not a valid WireGuard/AmneziaWG client profile!"
 	exit 12
 fi
@@ -155,11 +184,13 @@ until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
 done
 if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	echo
-	echo 'Preferred Cloudflare edge nodes as IATA codes, comma-separated, best first (empty = any)'
-	echo 'Which node serves an anycast address is up to the network, so the one you want may well'
-	echo 'be unreachable. Run /root/antizapret/warp.sh after the install to see what this server'
-	echo 'actually reaches and pick from the list'
-	read -rp 'Nodes: ' -e -i HEL WARP_NODE
+	echo 'The node is NOT picked now: scanning needs a running tunnel, so the first start just takes'
+	echo 'whatever node Cloudflare hands out. To see the nodes this server actually reaches and choose'
+	echo 'among them, run /root/antizapret/warp.sh after the reboot - it scans and shows a menu'
+	echo
+	echo 'The list below is only the fallback order for when an endpoint dies: IATA codes,'
+	echo 'comma-separated, best first. Leave empty (recommended) to fall back to the best node found'
+	read -rp 'Preferred nodes: ' -e -i '' WARP_NODE
 fi
 echo
 echo "Personal access token for the private fork https://github.com/$V2_REPO"
@@ -793,7 +824,7 @@ fi
 echo
 echo -e '\e[1;32mAntiZapret VPN + full VPN installed successfully!\e[0m'
 if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
-	echo 'Run /root/antizapret/warp.sh to see which Cloudflare nodes this server actually reaches'
-	echo 'and pick from them - the node you asked for may be unreachable from this network'
+	echo 'WARP is up on whatever node Cloudflare handed out. Run /root/antizapret/warp.sh after the'
+	echo 'reboot to scan (~3 min), see the nodes this server actually reaches and pick from them'
 fi
 reboot
