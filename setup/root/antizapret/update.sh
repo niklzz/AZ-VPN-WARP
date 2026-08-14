@@ -21,11 +21,10 @@ cd /root/antizapret
 rm -rf download
 mkdir -p download
 
-# Читаем настройки до первой загрузки: GITHUB_TOKEN нужен уже для скриптов из форка
 source setup
 
 # Код берём из своего форка, иначе правки откатятся при первом же обновлении
-V2_REPO=niklzz/az-vpn
+V2_REPO=niklzz/AZ-VPN-WARP
 
 UPDATE_LINK=https://raw.githubusercontent.com/$V2_REPO/main/setup/root/antizapret/update.sh
 UPDATE_PATH=update.sh
@@ -108,26 +107,16 @@ function download {
 	local path="${1}"
 	local tmp_path="${path}.tmp"
 	local link="$2"
-	# Токен нужен только для приватного форка. Если он пуст, функция ведёт себя как раньше
-	local auth=()
-	if [[ "$link" == *"$V2_REPO"* && -n "$GITHUB_TOKEN" ]]; then
-		auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-	fi
 	echo "$path"
-	if curl -fL --connect-timeout 30 "${auth[@]}" "$link" -o "$tmp_path"; then
+	if curl -fL --connect-timeout 30 "$link" -o "$tmp_path"; then
 		local_size="$(stat -c '%s' "$tmp_path")"
-		header="$(curl -fsSLI --connect-timeout 30 "${auth[@]}" "$link")" || exit 3
+		header="$(curl -fsSLI --connect-timeout 30 "$link")" || exit 3
 		remote_size="$(echo "$header" | grep -i content-length | cut -d ':' -f 2 | sed 's/[[:space:]]//g')"
 		if [[ -n "$remote_size" && "$local_size" != "$remote_size" ]]; then
 			echo "Failed to download $path! Size on server is different"
 			rm -f "$tmp_path"
 			exit 4
 		fi
-	elif [[ ${#auth[@]} -ne 0 ]]; then
-		# Приватную ссылку публичный прокси не вытянет, а токен ему отдавать незачем
-		echo "Failed to download $path!"
-		rm -f "$tmp_path"
-		exit 2
 	else
 		echo 'Trying connect via proxy...'
 		curl -fL --connect-timeout 30 "$PROXY$link" -o "$tmp_path" || exit 2

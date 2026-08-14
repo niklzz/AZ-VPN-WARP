@@ -7,12 +7,12 @@
 #   свой WARP-список   - через Cloudflare WARP
 #   всё остальное      - в туннель не входит, идёт через провайдера клиента
 #
-# https://github.com/niklzz/az-vpn
+# https://github.com/niklzz/AZ-VPN-WARP
 #
 export LC_ALL=C
 
 # Форк, из которого берётся код (см. update.sh)
-V2_REPO=niklzz/az-vpn
+V2_REPO=niklzz/AZ-VPN-WARP
 # Профиль зарубежного сервера. Имя не обязательное: если этого файла нет,
 # установщик подберёт любой WG/AWG-профиль из /root (см. проверку ниже)
 UPLINK_SOURCE=/root/v2-uplink.conf
@@ -180,7 +180,7 @@ echo 'at /root/v2-warp.conf only if you have one, it will be used as is and neve
 echo 'Domains from config/uplink-hosts.txt keep going through the uplink and take priority -'
 echo 'put there whatever needs a foreign IP'
 until [[ "$WARP_LIST_ENABLE" =~ (y|n) ]]; do
-	read -rp $'Route the \001\e[1;32m\002AntiZapret list\e[0m\002 through Cloudflare WARP? [y/n]: ' -e -i y WARP_LIST_ENABLE
+	read -rp $'Route the \001\e[1;32m\002AntiZapret list\001\e[0m\002 through RU Cloudflare WARP? [y/n]: ' -e -i y WARP_LIST_ENABLE
 done
 if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	echo
@@ -190,13 +190,8 @@ if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 	echo
 	echo 'The list below is only the fallback order for when an endpoint dies: IATA codes,'
 	echo 'comma-separated, best first. Leave empty (recommended) to fall back to the best node found'
-	read -rp 'Preferred nodes: ' -e -i '' WARP_NODE
+	read -rp 'Preferred WARP nodes: ' -e -i '' WARP_NODE
 fi
-echo
-echo "Personal access token for the private fork https://github.com/$V2_REPO"
-echo 'Leave empty if the repository is public. Input is hidden'
-read -rsp 'GitHub token: ' GITHUB_TOKEN
-echo
 echo
 until [[ "$VPN_WARP" =~ (y|n) ]]; do
 	read -rp $'Use Cloudflare WARP for \001\e[1;32m\002full VPN\e[0m\002 (vpn-*) outbound traffic? [y/n]: ' -e -i n VPN_WARP
@@ -525,7 +520,7 @@ PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install --force-reinstall --user /tmp
 
 # Клонируем репозиторий V2
 rm -rf /tmp/antizapret
-git clone "https://${GITHUB_TOKEN:+$GITHUB_TOKEN@}github.com/$V2_REPO.git" /tmp/antizapret
+git clone "https://github.com/$V2_REPO.git" /tmp/antizapret
 
 # Сохраняем пользовательские настройки и обработчики custom*.sh
 cp /root/antizapret/config/*.txt /tmp/antizapret/setup/root/antizapret/config/ || true
@@ -579,7 +574,6 @@ UPLINK_INTERFACE=$UPLINK_INTERFACE
 WARP_LIST_ENABLE=$WARP_LIST_ENABLE
 WARP_NODE=$WARP_NODE
 VPN_WARP=$VPN_WARP
-GITHUB_TOKEN=$GITHUB_TOKEN
 ANTIZAPRET_DNS=$ANTIZAPRET_DNS
 VPN_DNS=$VPN_DNS
 ANTIZAPRET_ADBLOCK=$ANTIZAPRET_ADBLOCK
@@ -643,7 +637,7 @@ cp -r /tmp/antizapret/setup/* /
 rm -rf /tmp/dnslib
 rm -rf /tmp/antizapret
 
-# В настройках лежит токен GitHub, поэтому закрываем файл от всех кроме root
+# Настройки читают только root-скрипты - закрываем файл от остальных
 chmod 600 /root/antizapret/setup
 
 # Скачиваем warpscout - им warp.sh выбирает узел Cloudflare для WARP-ветки.
