@@ -641,13 +641,16 @@ rm -rf /tmp/antizapret
 chmod 600 /root/antizapret/setup
 
 # Скачиваем warpscout - им warp.sh выбирает узел Cloudflare для WARP-ветки.
+# Берём форк warpscout-tg: он проверяет через каждый endpoint настоящий MTProto до всех пяти ДЦ
+# Telegram и умеет отбросить выходы, где Telegram не отвечает (-tg-only) - оригинал ранжирует
+# только по пингу и спокойно выдаёт быстрый узел с мёртвым Telegram.
 # Готовый статический бинарник ~4 МБ, root ему не нужен, память сам держит в 32 МiB -
 # Docker ради одного вызова в сутки был бы несоразмерен. Хеши прибиты: файл исполняемый
 if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
-	WARPSCOUT_VERSION=0.14.0
+	WARPSCOUT_VERSION=0.14.3
 	case "$(uname -m)" in
-		x86_64)  WARPSCOUT_ARCH=amd64; WARPSCOUT_SHA256=5092c65ade7cc6f35a9845cd8600b46420a5b867c2afa31592d4447687a0fee8 ;;
-		aarch64) WARPSCOUT_ARCH=arm64; WARPSCOUT_SHA256=b890fae2a21bbb74e72255bc05c53e4bbfe38d1b8fdd0af78d9a82d470c4292e ;;
+		x86_64)  WARPSCOUT_ARCH=amd64; WARPSCOUT_SHA256=06e784d1431889c62633c07083ff56283eff595f8e366ed1214c9d719ddb933b ;;
+		aarch64) WARPSCOUT_ARCH=arm64; WARPSCOUT_SHA256=63a888082fa85f328903747b1bbed49bfb80a6b4f1a97fc2bd9d4c65c597839c ;;
 		*)       WARPSCOUT_ARCH='' ;;
 	esac
 
@@ -656,7 +659,7 @@ if [[ "$WARP_LIST_ENABLE" == 'y' ]]; then
 		mkdir -p /tmp/warpscout
 		WARPSCOUT_FILE="warpscout_${WARPSCOUT_VERSION}_linux_${WARPSCOUT_ARCH}.tar.gz"
 		if curl -fsSL --connect-timeout 30 -o "/tmp/warpscout/$WARPSCOUT_FILE" \
-				"https://github.com/vernette/warpscout/releases/download/v$WARPSCOUT_VERSION/$WARPSCOUT_FILE" \
+				"https://github.com/niklzz/warpscout-tg/releases/download/v$WARPSCOUT_VERSION/$WARPSCOUT_FILE" \
 			&& echo "$WARPSCOUT_SHA256  /tmp/warpscout/$WARPSCOUT_FILE" | sha256sum -c - \
 			&& tar -xzf "/tmp/warpscout/$WARPSCOUT_FILE" -C /tmp/warpscout; then
 			install -m 755 /tmp/warpscout/warpscout /root/antizapret/warpscout

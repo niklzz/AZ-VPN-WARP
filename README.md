@@ -106,7 +106,9 @@ scp 'root@СЕРВЕР:/root/antizapret/client/amneziawg/antizapret/*.conf' ~/De
 /root/antizapret/warp.sh
 ```
 
-Скан идёт пару минут и показывает узлы, реально доступные из этой сети, с задержкой. Выбранное
+Скан идёт пару минут и показывает узлы, реально доступные из этой сети, с задержкой. Через каждый
+кандидат отправляется настоящий MTProto-запрос ко всем пяти дата-центрам Telegram, и узлы, где Telegram
+не отвечает, отбрасываются (колонка `TG` — отклик самого медленного ДЦ). Выбранное
 сохраняется в `WARP_NODE` и используется для автовосстановления, если endpoint перестанет отвечать.
 Нужного узла может не быть вовсе — какой PoP обслужит anycast-адрес, решает сеть.
 Не выбрать ничего тоже нормально: первый старт берёт endpoint, который выдала регистрация Cloudflare.
@@ -323,7 +325,7 @@ ipset list antizapret-allow | grep '\.' | sort -u    # исключения
   Поддержать автора: [cloudtips](https://pay.cloudtips.ru/p/b3f20611), [boosty](https://boosty.to/gubernievs)
 - [antizapret-vpn-container](https://bitbucket.org/anticensority/antizapret-vpn-container/src/master)
   ValdikSS — исходная идея раздельного туннелирования
-- [warpscout](https://github.com/vernette/warpscout) — подбор узла Cloudflare WARP
+- [warpscout-tg](https://github.com/niklzz/warpscout-tg) — подбор узла Cloudflare WARP с проверкой Telegram (форк [vernette/warpscout](https://github.com/vernette/warpscout))
 
 Обсуждение оригинального проекта: [4pda](https://4pda.to/forum/index.php?showtopic=1095869),
 [ntc.party](https://ntc.party/t/9270).

@@ -4,7 +4,7 @@ export LC_ALL=C
 
 # Выбор узла Cloudflare для WARP-ветки.
 #
-#   warp.sh          меню: сканирует сеть и показывает, какие узлы вообще доступны
+#   warp.sh          меню: сканирует сеть и показывает узлы, через которые работает Telegram
 #   warp.sh auto     без вопросов, по списку WARP_NODE - для автофолбэка из up.sh
 #   warp.sh LHR      разово применить узел, не трогая сохранённый список
 #
@@ -58,18 +58,20 @@ if [[ ! -f "$ACCOUNT" ]]; then
 fi
 
 # Скан один на всё: даёт и готовый профиль лучшего endpoint, и список доступных узлов.
-# -gen-i1/-gen-junk рандомизируют обфускацию, иначе она была бы одинаковой у всех установок
+# -gen-i1/-gen-junk рандомизируют обфускацию, иначе она была бы одинаковой у всех установок.
+# -tg-only оставляет только endpoint'ы, через которые Telegram реально отвечает со всех пяти ДЦ,
+# и ранжирует их по отклику Telegram: быстрый узел с мёртвым Telegram нам не нужен
 echo 'Scanning Cloudflare endpoints, this takes a few minutes...'
 "$WARPSCOUT" scan -p awg -plain -P -no-dns -mtu 1280 \
-	-gen-i1 sip -gen-junk \
+	-gen-i1 sip -gen-junk -tg-only \
 	-conf "$TMP_CONF" -o "$TMP_REPORT" \
 	-a "$ACCOUNT" > /dev/null 2>&1 || true
 
-# Секция отчёта "Best endpoint per node": NODE ENDPOINT PING TUN_PING LOSS SEEN_AS LOCATION
+# Секция отчёта "Best endpoint per node": NODE ENDPOINT PING TUN_PING LOSS TG SEEN_AS LOCATION
 NODES=$(awk '/^# Best endpoint per node/{f=1; next} f && /^NODE/{next} f && NF {print}' "$TMP_REPORT")
 
 if [[ -z "$NODES" ]]; then
-	echo 'No working endpoints found! The profile is left as is'
+	echo 'No endpoints with working Telegram found! The profile is left as is'
 	exit 1
 fi
 
@@ -159,13 +161,13 @@ case "$MODE" in
 		echo
 		echo 'Cloudflare edge nodes reachable from this server:'
 		echo
-		printf '     %-6s %-22s %-9s %-6s %s\n' 'NODE' 'ENDPOINT' 'TUN PING' 'LOSS' 'EXIT REGION'
+		printf '     %-6s %-22s %-9s %-6s %-9s %s\n' 'NODE' 'ENDPOINT' 'TUN PING' 'LOSS' 'TG' 'EXIT REGION'
 		i=0
-		while read -r node endpoint eping tping loss seen _; do
+		while read -r node endpoint eping tping loss tg seen _; do
 			i=$((i + 1))
 			mark=''
 			[[ "$endpoint" == "$CURRENT" ]] && mark=' <- current'
-			printf '  %2d) %-6s %-22s %-9s %-6s %s%s\n' "$i" "$node" "$endpoint" "$tping" "$loss" "$seen" "$mark"
+			printf '  %2d) %-6s %-22s %-9s %-6s %-9s %s%s\n' "$i" "$node" "$endpoint" "$tping" "$loss" "$tg" "$seen" "$mark"
 		done <<< "$NODES"
 		echo
 		echo 'Enter nodes in order of preference, comma-separated - the first reachable one is used'
